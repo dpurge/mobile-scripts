@@ -1,0 +1,89 @@
+/* All sizing lives here (not in component JS) so tests/test_layout.py can check it.
+   Components render into the light DOM, so these rules apply to them directly. */
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: system-ui, sans-serif;
+  font-size: 18px;
+}
+
+app-list {
+  display: block;
+  min-height: 100%;
+  box-sizing: border-box;
+  padding: 1rem;
+}
+
+app-list h1 {
+  margin-top: 0;
+}
+
+app-list ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+app-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid #ccc;
+}
+
+app-list .app-info {
+  flex: 1 1 12rem;
+}
+
+app-list .buttons,
+app-form .buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+/* font: inherit because browsers give buttons a ~13px font; min-height keeps them touch-sized. */
+app-list button,
+app-form button {
+  font: inherit;
+  min-height: 3rem;
+  padding: 0 1rem;
+}
+
+app-form form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+app-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+app-form input {
+  font: inherit;
+  min-height: 3rem;
+  box-sizing: border-box;
+  width: 100%;
+}
+
+app-list .secondary {
+  display: block;
+  font-size: 15px;
+  color: #555;
+}
+
+app-list .error,
+app-form .error {
+  color: #b00020;
+}

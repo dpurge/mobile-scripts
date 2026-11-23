@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Package visibility (targetSdk 30+): without it Termux is invisible to this app. -->
+    <queries>
+        <package android:name="com.termux" />
+    </queries>
+
+    <application
+        android:label="Mobile Scripts"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+        <!-- configChanges: rotating the device must not recreate the activity, because onDestroy
+             would shut the backend down. -->
+        <activity
+            android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|keyboard|smallestScreenSize|uiMode"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

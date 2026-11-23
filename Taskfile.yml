@@ -1,0 +1,51 @@
+version: '3'
+
+tasks:
+  default:
+    desc: List the available tasks
+    silent: true
+    cmds:
+      - task --list
+
+  setup:
+    desc: Install dependencies and create config/.env if it does not exist
+    cmds:
+      - uv sync
+      - uv run python -m launcher.tools.init_env
+
+  backend:
+    desc: "Run the backend (default port 8765; override: task backend PORT=9000)"
+    vars:
+      PORT: '{{.PORT | default "8765"}}'
+    cmds:
+      - uv run python -m launcher.backend --port {{.PORT}}
+
+  test:
+    desc: "Run the tests (extra pytest args: task test -- -k name)"
+    cmds:
+      - uv run pytest {{.CLI_ARGS}}
+
+  app:run:
+    desc: "Run one app without the launcher (task app:run -- apps/hello_py/main.py)"
+    cmds:
+      - uv run python -m launcher.tools.run_app {{.CLI_ARGS}}
+
+  desktop:
+    desc: Run the desktop client (pywebview window that starts the backend; closing it stops everything)
+    cmds:
+      - uv run --group desktop python -m launcher.desktop
+
+  app:window:
+    desc: "Run one app in a desktop window (task app:window -- apps/hello_py/main.py)"
+    cmds:
+      - uv run --group desktop python -m launcher.desktop.run_script {{.CLI_ARGS}}
+
+  refresh:
+    desc: Pull the latest changes (fast-forward only)
+    cmds:
+      - git pull --ff-only
+
+  apk:build:
+    desc: Build the Android APK in Docker (output in android/dist/)
+    cmds:
+      - uv run python android/build_apk.py

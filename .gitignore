@@ -1,0 +1,9 @@
+config/.env
+android/dist/
+.venv/
+.agent/
+__pycache__/
+.pytest_cache/
+.gradle/
+android/**/build/
+android/.cache/

@@ -1,0 +1,1 @@
+{"apps":[{"name":"Hello (Python)","script_path":"apps/hello_py/main.py"},{"name":"Hello (Node)","script_path":"apps/hello_js/main.mjs"}]}

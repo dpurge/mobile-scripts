@@ -1,0 +1,20 @@
+[project]
+name = "mobile-scripts"
+version = "0.1.0"
+description = "Launcher for Python scripts with a web UI, for Android (Termux) and desktop."
+requires-python = ">=3.14"
+dependencies = []
+
+[dependency-groups]
+desktop = [
+    "pywebview>=6.2.1",
+]
+dev = ["pytest"]
+
+[tool.uv]
+# An application, not a library: `uv run` must not build or install the project.
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

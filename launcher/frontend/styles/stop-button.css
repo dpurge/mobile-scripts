@@ -1,0 +1,10 @@
+/* Loaded by app pages as /_launcher/styles/stop-button.css; stop-button renders in the light DOM. */
+stop-button button {
+  font: inherit;
+  min-height: 3rem;
+  padding: 0 1.5rem;
+}
+
+stop-button .error {
+  color: #b00020;
+}
