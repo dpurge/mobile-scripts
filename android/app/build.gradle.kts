@@ -14,7 +14,7 @@ android {
 
     defaultConfig {
         applicationId = "local.mobilescripts"
-        minSdk = 26
+        minSdk = 24
         targetSdk = 34
         versionCode = 1
         versionName = "0.1"

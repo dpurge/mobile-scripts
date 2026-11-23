@@ -48,4 +48,4 @@ tasks:
   apk:build:
     desc: Build the Android APK in Docker (output in android/dist/)
     cmds:
-      - uv run python android/build_apk.py
+      - uv run python android/build_apk.py --context=default

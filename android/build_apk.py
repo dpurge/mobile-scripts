@@ -22,7 +22,8 @@ GRADLE_VERSION = "9.9.2"
 # as WORKSPACE_ROOT in config/.env.example.
 DEFAULT_WORKSPACE_DIR = "/data/data/com.termux/files/home/mobile-scripts"
 GRADLE_URL = "https://services.gradle.org/distributions/gradle-{version}-bin.zip"
-APK_RELATIVE = Path("app/build/outputs/apk/debug/app-debug.apk")
+# APK_RELATIVE = Path("app/build/outputs/apk/debug/app-debug.apk")
+APK_RELATIVE = Path("app/build/outputs/apk/release/app-release-unsigned.apk")
 # Gradle and the debug keystore live in the container user's home; mounting host
 # directories there caches downloads and keeps the signing key stable across builds.
 CONTAINER_GRADLE_HOME = "/root/.gradle"
@@ -50,12 +51,19 @@ def run_command(context: str, android_dir: Path, workspace_dir: str = DEFAULT_WO
     The workspace directory reaches app/build.gradle.kts as the Gradle property workspaceDir.
     """
     cache = android_dir / ".cache"
+    # return [
+    #     "docker", "--context", context, "run", "--rm", "--platform", PLATFORM,
+    #     "-v", f"{android_dir}:/workspace",
+    #     "-v", f"{cache / 'gradle'}:{CONTAINER_GRADLE_HOME}",
+    #     "-v", f"{cache / 'android'}:{CONTAINER_ANDROID_HOME}",
+    #     IMAGE, "gradle", "--no-daemon", f"-PworkspaceDir={workspace_dir}", "assembleDebug",
+    # ]
     return [
         "docker", "--context", context, "run", "--rm", "--platform", PLATFORM,
         "-v", f"{android_dir}:/workspace",
         "-v", f"{cache / 'gradle'}:{CONTAINER_GRADLE_HOME}",
         "-v", f"{cache / 'android'}:{CONTAINER_ANDROID_HOME}",
-        IMAGE, "gradle", "--no-daemon", f"-PworkspaceDir={workspace_dir}", "assembleDebug",
+        IMAGE, "gradle", "--no-daemon", f"-PworkspaceDir={workspace_dir}", "assembleRelease",
     ]
 
 
@@ -99,6 +107,91 @@ def copy_apk(android_dir: Path) -> Path:
     dist.mkdir(exist_ok=True)
     return Path(shutil.copy2(source, dist / source.name))
 
+def sign_apk(android_dir: Path, context: str) -> Path:
+    """Sign the release APK using the persistent Android debug keystore."""
+    apk = android_dir / APK_RELATIVE
+    signed_apk = apk.with_name("app-release.apk")
+    cache = android_dir / ".cache"
+
+    command = [
+        "docker", "--context", context, "run", "--rm",
+        "--platform", PLATFORM,
+        "-v", f"{android_dir}:/workspace",
+        "-v", f"{cache / 'android'}:{CONTAINER_ANDROID_HOME}",
+        IMAGE,
+        "sh", "-c",
+        """
+        APKSIGNER=$(find / -type f -name apksigner 2>/dev/null | head -n 1)
+
+        if [ -z "$APKSIGNER" ]; then
+            echo "ERROR: apksigner not found. Android Build Tools may not be installed."
+            exit 1
+        fi
+
+        echo "Using: $APKSIGNER"
+
+        "$APKSIGNER" sign \
+            --ks /root/.android/debug.keystore \
+            --ks-pass pass:android \
+            --key-pass pass:android \
+            --ks-key-alias androiddebugkey \
+            --out /workspace/app/build/outputs/apk/release/app-release.apk \
+            /workspace/app/build/outputs/apk/release/app-release-unsigned.apk
+        """
+    ]
+
+    result = subprocess.run(command)
+    if result.returncode != 0:
+        raise RuntimeError("APK signing failed.")
+
+    return signed_apk
+
+def diagnose_apk(android_dir: Path, context: str) -> None:
+    """Validate the APK using Android SDK tools inside Docker."""
+    cache = android_dir / ".cache"
+
+    command = [
+        "docker", "--context", context, "run", "--rm",
+        "--platform", PLATFORM,
+        "-v", f"{android_dir}:/workspace",
+        "-v", f"{cache / 'android'}:{CONTAINER_ANDROID_HOME}",
+        IMAGE,
+        "sh", "-c",
+        """
+        set -eu
+
+        APK=/workspace/dist/app-release.apk
+
+        echo "===== APK FILE ====="
+        ls -lh "$APK"
+
+        echo
+        echo "===== ZIP INTEGRITY ====="
+        unzip -t "$APK"
+
+        echo
+        echo "===== SIGNATURE ====="
+        APKSIGNER=$(find /opt/android-sdk/build-tools -type f -name apksigner | sort -V | tail -n 1)
+        "$APKSIGNER" verify --verbose --print-certs "$APK"
+
+        echo
+        echo "===== ANDROID MANIFEST ====="
+        AAPT=$(find /opt/android-sdk/build-tools -type f -name aapt | sort -V | tail -n 1)
+        "$AAPT" dump badging "$APK"
+
+        echo
+        echo "===== APK CONTENTS ====="
+        unzip -l "$APK"
+
+        echo
+        echo "===== DEX FILES ====="
+        unzip -l "$APK" | grep -E 'classes[0-9]*\\.dex' || true
+        """
+    ]
+
+    result = subprocess.run(command)
+    if result.returncode != 0:
+        raise RuntimeError("APK diagnostics failed.")
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build the APK in Docker.")
@@ -113,7 +206,18 @@ def main() -> int:
         if subprocess.run(command).returncode != 0:
             print(f"Command failed: {' '.join(command)}", file=sys.stderr)
             return 1
-    print(f"APK: {copy_apk(ANDROID_DIR)}")
+    # print(f"APK: {copy_apk(ANDROID_DIR)}")
+    signed_apk = sign_apk(ANDROID_DIR, args.context)
+
+    dist = ANDROID_DIR / "dist"
+    dist.mkdir(exist_ok=True)
+
+    destination = dist / signed_apk.name
+    shutil.copy2(signed_apk, destination)
+    diagnose_apk(ANDROID_DIR, args.context)
+
+    print(f"APK: {destination}")
+
     return 0
 
 
