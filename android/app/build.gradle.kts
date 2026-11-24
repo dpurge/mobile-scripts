@@ -21,6 +21,14 @@ android {
         buildConfigField("String", "WORKSPACE_DIR", "\"$workspaceDir\"")
     }
 
+    buildTypes {
+        release {
+            // Sideloaded personal app: sign the release build with the debug keystore (created in
+            // ~/.android, persisted by build_apk.py), so it installs and updates over earlier builds.
+            signingConfig = signingConfigs.getByName("debug")
+        }
+    }
+
     buildFeatures {
         buildConfig = true
     }

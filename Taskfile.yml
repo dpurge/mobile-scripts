@@ -46,6 +46,6 @@ tasks:
       - git pull --ff-only
 
   apk:build:
-    desc: Build the Android APK in Docker (output in android/dist/)
+    desc: "Build the Android APK in Docker into android/dist/ (options: task apk:build -- --variant debug --workspace-dir PATH)"
     cmds:
-      - uv run python android/build_apk.py --context=default
+      - uv run python android/build_apk.py --context=default {{.CLI_ARGS}}

@@ -1,6 +1,6 @@
 """Builds the Android APK inside Docker and copies it to android/dist/.
 
-Usage: uv run python android/build_apk.py [--context NAME] [--workspace-dir PATH]
+Usage: uv run python android/build_apk.py [--context NAME] [--workspace-dir PATH] [--variant debug|release]
 """
 
 import argparse
@@ -8,7 +8,6 @@ import hashlib
 import shutil
 import subprocess
 import sys
-import urllib.request
 from pathlib import Path
 
 ANDROID_DIR = Path(__file__).resolve().parent
@@ -22,8 +21,10 @@ GRADLE_VERSION = "9.9.2"
 # as WORKSPACE_ROOT in config/.env.example.
 DEFAULT_WORKSPACE_DIR = "/data/data/com.termux/files/home/mobile-scripts"
 GRADLE_URL = "https://services.gradle.org/distributions/gradle-{version}-bin.zip"
-# APK_RELATIVE = Path("app/build/outputs/apk/debug/app-debug.apk")
-APK_RELATIVE = Path("app/build/outputs/apk/release/app-release-unsigned.apk")
+# Both variants are signed with the Android debug keystore (see app/build.gradle.kts), so either one
+# installs; the release variant is the one without the debuggable flag.
+VARIANTS = ("debug", "release")
+DEFAULT_VARIANT = "release"
 # Gradle and the debug keystore live in the container user's home; mounting host
 # directories there caches downloads and keeps the signing key stable across builds.
 CONTAINER_GRADLE_HOME = "/root/.gradle"
@@ -45,25 +46,27 @@ def build_command(context: str, android_dir: Path) -> list[str]:
             str(android_dir / ".cache" / "downloads")]
 
 
-def run_command(context: str, android_dir: Path, workspace_dir: str = DEFAULT_WORKSPACE_DIR) -> list[str]:
+def gradle_task(variant: str) -> str:
+    return f"assemble{variant.capitalize()}"
+
+
+def apk_name(variant: str) -> str:
+    return f"app-{variant}.apk"
+
+
+def run_command(context: str, android_dir: Path, workspace_dir: str = DEFAULT_WORKSPACE_DIR,
+                variant: str = DEFAULT_VARIANT) -> list[str]:
     """Docker argument list that runs the Gradle build with the cache mounts.
 
     The workspace directory reaches app/build.gradle.kts as the Gradle property workspaceDir.
     """
     cache = android_dir / ".cache"
-    # return [
-    #     "docker", "--context", context, "run", "--rm", "--platform", PLATFORM,
-    #     "-v", f"{android_dir}:/workspace",
-    #     "-v", f"{cache / 'gradle'}:{CONTAINER_GRADLE_HOME}",
-    #     "-v", f"{cache / 'android'}:{CONTAINER_ANDROID_HOME}",
-    #     IMAGE, "gradle", "--no-daemon", f"-PworkspaceDir={workspace_dir}", "assembleDebug",
-    # ]
     return [
         "docker", "--context", context, "run", "--rm", "--platform", PLATFORM,
         "-v", f"{android_dir}:/workspace",
         "-v", f"{cache / 'gradle'}:{CONTAINER_GRADLE_HOME}",
         "-v", f"{cache / 'android'}:{CONTAINER_ANDROID_HOME}",
-        IMAGE, "gradle", "--no-daemon", f"-PworkspaceDir={workspace_dir}", "assembleRelease",
+        IMAGE, "gradle", "--no-daemon", f"-PworkspaceDir={workspace_dir}", gradle_task(variant),
     ]
 
 
@@ -82,142 +85,92 @@ def verify_sha256(path: Path, expected: str) -> None:
         raise ValueError(f"SHA-256 mismatch for {path}: expected {expected.strip()}, got {actual}.")
 
 
+def curl(url: str, output: Path | None = None) -> str:
+    """Fetch a URL with curl and return the body (or write it to output).
+
+    curl rather than urllib: Python's OpenSSL rejects the certificate chain of a TLS-intercepting
+    network (CA without key usage extension) that curl and the system trust store accept.
+    """
+    command = ["curl", "-fsSL", "--max-time", "600", url] + (["-o", str(output)] if output else [])
+    result = subprocess.run(command, capture_output=output is None, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"Downloading {url} failed (curl exit code {result.returncode}): {result.stderr or ''}".strip())
+    return result.stdout or ""
+
+
 def ensure_gradle_zip(downloads_dir: Path, version: str) -> Path:
-    """Download Gradle on the host (not in Docker, where github.com is not trusted) and verify it."""
+    """Download Gradle on the host (not in Docker, where github.com is not trusted) and verify it.
+
+    The published checksum is kept next to the zip, so a cached zip is verified without network.
+    """
     zip_path = downloads_dir / gradle_zip_name(version)
+    checksum_path = zip_path.with_name(zip_path.name + ".sha256")
     url = GRADLE_URL.format(version=version)
-    with urllib.request.urlopen(url + ".sha256", timeout=60) as response:
-        expected = response.read().decode("ascii")
+    if zip_path.is_file() and checksum_path.is_file():
+        verify_sha256(zip_path, checksum_path.read_text(encoding="ascii"))
+        return zip_path
+    expected = curl(url + ".sha256")
     if not zip_path.is_file():
         downloads_dir.mkdir(parents=True, exist_ok=True)
         partial = zip_path.with_suffix(".part")
-        with urllib.request.urlopen(url, timeout=60) as response, partial.open("wb") as file:
-            shutil.copyfileobj(response, file)
+        curl(url, partial)
         partial.replace(zip_path)
     verify_sha256(zip_path, expected)
+    checksum_path.write_text(expected, encoding="ascii")
     return zip_path
 
 
-def copy_apk(android_dir: Path) -> Path:
-    """Copy the built APK to android/dist/ and return its path."""
-    source = android_dir / APK_RELATIVE
+def copy_apk(android_dir: Path, variant: str = DEFAULT_VARIANT) -> Path:
+    """Copy the signed APK of the variant from the Gradle output to android/dist/ and return its path."""
+    source = android_dir / "app" / "build" / "outputs" / "apk" / variant / apk_name(variant)
     if not source.is_file():
-        raise FileNotFoundError(f"Gradle finished but {source} does not exist.")
+        unsigned = source.with_name(f"app-{variant}-unsigned.apk")
+        hint = " It is unsigned: the build type has no signing config." if unsigned.is_file() else ""
+        raise FileNotFoundError(f"Gradle finished but {source} does not exist.{hint}")
     dist = android_dir / "dist"
     dist.mkdir(exist_ok=True)
     return Path(shutil.copy2(source, dist / source.name))
 
-def sign_apk(android_dir: Path, context: str) -> Path:
-    """Sign the release APK using the persistent Android debug keystore."""
-    apk = android_dir / APK_RELATIVE
-    signed_apk = apk.with_name("app-release.apk")
-    cache = android_dir / ".cache"
 
-    command = [
-        "docker", "--context", context, "run", "--rm",
-        "--platform", PLATFORM,
-        "-v", f"{android_dir}:/workspace",
-        "-v", f"{cache / 'android'}:{CONTAINER_ANDROID_HOME}",
-        IMAGE,
-        "sh", "-c",
-        """
-        APKSIGNER=$(find / -type f -name apksigner 2>/dev/null | head -n 1)
-
-        if [ -z "$APKSIGNER" ]; then
-            echo "ERROR: apksigner not found. Android Build Tools may not be installed."
-            exit 1
-        fi
-
-        echo "Using: $APKSIGNER"
-
-        "$APKSIGNER" sign \
-            --ks /root/.android/debug.keystore \
-            --ks-pass pass:android \
-            --key-pass pass:android \
-            --ks-key-alias androiddebugkey \
-            --out /workspace/app/build/outputs/apk/release/app-release.apk \
-            /workspace/app/build/outputs/apk/release/app-release-unsigned.apk
-        """
-    ]
-
-    result = subprocess.run(command)
-    if result.returncode != 0:
-        raise RuntimeError("APK signing failed.")
-
-    return signed_apk
-
-def diagnose_apk(android_dir: Path, context: str) -> None:
-    """Validate the APK using Android SDK tools inside Docker."""
-    cache = android_dir / ".cache"
-
-    command = [
-        "docker", "--context", context, "run", "--rm",
-        "--platform", PLATFORM,
-        "-v", f"{android_dir}:/workspace",
-        "-v", f"{cache / 'android'}:{CONTAINER_ANDROID_HOME}",
-        IMAGE,
-        "sh", "-c",
-        """
+def inspect_command(context: str, android_dir: Path, apk: str) -> list[str]:
+    """Docker argument list that verifies the signature of dist/<apk> and prints its SDK levels."""
+    script = f"""
         set -eu
-
-        APK=/workspace/dist/app-release.apk
-
-        echo "===== APK FILE ====="
-        ls -lh "$APK"
-
-        echo
-        echo "===== ZIP INTEGRITY ====="
-        unzip -t "$APK"
-
-        echo
-        echo "===== SIGNATURE ====="
-        APKSIGNER=$(find /opt/android-sdk/build-tools -type f -name apksigner | sort -V | tail -n 1)
+        APK=/workspace/dist/{apk}
+        SDK=${{ANDROID_HOME}}/build-tools
+        APKSIGNER=$(ls -d "$SDK"/*/apksigner | sort -V | tail -n 1)
+        AAPT=$(ls -d "$SDK"/*/aapt | sort -V | tail -n 1)
+        ls -l "$APK"
         "$APKSIGNER" verify --verbose --print-certs "$APK"
+        "$AAPT" dump badging "$APK" | grep -E "^(package|sdkVersion|targetSdkVersion)"
+    """
+    return ["docker", "--context", context, "run", "--rm", "--platform", PLATFORM,
+            "-v", f"{android_dir}:/workspace", IMAGE, "sh", "-c", script]
 
-        echo
-        echo "===== ANDROID MANIFEST ====="
-        AAPT=$(find /opt/android-sdk/build-tools -type f -name aapt | sort -V | tail -n 1)
-        "$AAPT" dump badging "$APK"
-
-        echo
-        echo "===== APK CONTENTS ====="
-        unzip -l "$APK"
-
-        echo
-        echo "===== DEX FILES ====="
-        unzip -l "$APK" | grep -E 'classes[0-9]*\\.dex' || true
-        """
-    ]
-
-    result = subprocess.run(command)
-    if result.returncode != 0:
-        raise RuntimeError("APK diagnostics failed.")
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build the APK in Docker.")
     parser.add_argument("--context", default=DEFAULT_CONTEXT, help="docker context name")
     parser.add_argument("--workspace-dir", default=DEFAULT_WORKSPACE_DIR,
                         help="path of the repo clone in Termux, baked into the APK (default: %(default)s)")
+    parser.add_argument("--variant", choices=VARIANTS, default=DEFAULT_VARIANT,
+                        help="build type; both are signed and installable (default: %(default)s)")
     args = parser.parse_args()
     for cache_name in ("gradle", "android"):
         (ANDROID_DIR / ".cache" / cache_name).mkdir(parents=True, exist_ok=True)
     ensure_gradle_zip(ANDROID_DIR / ".cache" / "downloads", GRADLE_VERSION)
-    for command in (build_command(args.context, ANDROID_DIR), run_command(args.context, ANDROID_DIR, args.workspace_dir)):
+    commands = (build_command(args.context, ANDROID_DIR),
+                run_command(args.context, ANDROID_DIR, args.workspace_dir, args.variant))
+    for command in commands:
         if subprocess.run(command).returncode != 0:
             print(f"Command failed: {' '.join(command)}", file=sys.stderr)
             return 1
-    # print(f"APK: {copy_apk(ANDROID_DIR)}")
-    signed_apk = sign_apk(ANDROID_DIR, args.context)
-
-    dist = ANDROID_DIR / "dist"
-    dist.mkdir(exist_ok=True)
-
-    destination = dist / signed_apk.name
-    shutil.copy2(signed_apk, destination)
-    diagnose_apk(ANDROID_DIR, args.context)
-
-    print(f"APK: {destination}")
-
+    apk = copy_apk(ANDROID_DIR, args.variant)
+    inspect = inspect_command(args.context, ANDROID_DIR, apk.name)
+    if subprocess.run(inspect).returncode != 0:
+        print(f"APK check failed: {' '.join(inspect)}", file=sys.stderr)
+        return 1
+    print(f"APK: {apk}")
     return 0
 
 

@@ -5,7 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 
 /** Talks to the Termux app: is it installed, may we use it, and start the backend in it. */
-class TermuxLauncher(private val activity: Activity) {
+class TermuxLauncher(private val activity: Activity, private val workspaceDir: () -> String) {
 
     fun isInstalled(): Boolean = try {
         // Needs the <queries> entry for com.termux in the manifest (package visibility).
@@ -31,15 +31,16 @@ class TermuxLauncher(private val activity: Activity) {
      * backend then never answers and the caller's health timeout reports it.
      */
     fun startBackend(port: Int) {
+        val workspace = workspaceDir()
         val intent = Intent().apply {
             setClassName(TERMUX_PACKAGE, RUN_COMMAND_SERVICE)
             action = RUN_COMMAND_ACTION
             putExtra("$TERMUX_PACKAGE.RUN_COMMAND_PATH", BASH_PATH)
             putExtra(
                 "$TERMUX_PACKAGE.RUN_COMMAND_ARGUMENTS",
-                arrayOf("${BuildConfig.WORKSPACE_DIR}/launcher/termux/start.sh", port.toString()),
+                arrayOf("$workspace/launcher/termux/start.sh", port.toString()),
             )
-            putExtra("$TERMUX_PACKAGE.RUN_COMMAND_WORKDIR", BuildConfig.WORKSPACE_DIR)
+            putExtra("$TERMUX_PACKAGE.RUN_COMMAND_WORKDIR", workspace)
             putExtra("$TERMUX_PACKAGE.RUN_COMMAND_BACKGROUND", true)
         }
         // The activity is in the foreground, so startService is allowed on API 26+; Termux's

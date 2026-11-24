@@ -7,6 +7,7 @@ import android.util.TypedValue
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -16,35 +17,54 @@ import android.widget.TextView
  * starts, and a diagnostic with a Retry button when something fails. Full width and height,
  * text of at least 18sp (15sp for the secondary lines).
  */
-class StatusScreen(private val activity: Activity, private val onRetry: () -> Unit) {
+class StatusScreen(
+    private val activity: Activity,
+    private val currentWorkspace: () -> String,
+    private val onRetry: (workspace: String) -> Unit,
+) {
 
     /** A status line, for example "Starting Termux backend...". */
     fun status(message: String): ScrollView = screen(
         text(message, BASE_SP, bold = true),
     )
 
+    /** Why the page opens in the browser, with a button to open it again. */
+    fun browserHandoff(message: String, onOpen: () -> Unit): ScrollView = screen(
+        text(message, BASE_SP),
+        button("Open in browser", onOpen),
+    )
+
     /** A headline, the concrete failure, the likely causes and a Retry button. */
     fun diagnostic(headline: String, failure: String): ScrollView {
-        val retry = Button(activity).apply {
-            text = "Retry"
+        val workspace = EditText(activity).apply {
+            setText(currentWorkspace())
+            setSingleLine()
             setTextSize(TypedValue.COMPLEX_UNIT_SP, BASE_SP)
-            minimumHeight = dp(MIN_TOUCH_DP)
-            setOnClickListener { onRetry() }
         }
+        val retry = button("Retry") { onRetry(workspace.text.toString()) }
         return screen(
             text(headline, BASE_SP, bold = true),
             text(failure, BASE_SP, color = ERROR_COLOR),
+            text(WORKSPACE_LABEL, BASE_SP, bold = true),
+            workspace,
             text(CAUSES_HEADING, BASE_SP, bold = true),
             text(causes(), SECONDARY_SP),
             retry,
         )
     }
 
+    private fun button(label: String, onClick: () -> Unit) = Button(activity).apply {
+        text = label
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, BASE_SP)
+        minimumHeight = dp(MIN_TOUCH_DP)
+        setOnClickListener { onClick() }
+    }
+
     private fun causes(): String = """
         1. Termux (F-Droid build) is not installed.
         2. allow-external-apps=true is missing in ~/.termux/termux.properties in Termux (or termux-reload-settings was not run after adding it).
         3. The RUN_COMMAND permission is not granted to this app (Android Settings, Apps, Mobile Scripts, Permissions, Additional permissions).
-        4. The repo is not cloned at ${BuildConfig.WORKSPACE_DIR}.
+        4. The repo is not cloned at ${currentWorkspace()} (change the path above if you moved it, then Retry).
         5. python is not installed in Termux (pkg install python).
 
         Logs in Termux: ${'$'}HOME/launcher-backend.log and ${'$'}HOME/launcher-backend.start-error.log
@@ -93,6 +113,7 @@ class StatusScreen(private val activity: Activity, private val onRetry: () -> Un
         const val MIN_TOUCH_DP = 48
         const val PADDING_DP = 16
         const val CAUSES_HEADING = "Likely causes"
+        const val WORKSPACE_LABEL = "Workspace: where the repo is cloned in Termux"
         val ERROR_COLOR = Color.rgb(0xB0, 0x00, 0x20)
     }
 }

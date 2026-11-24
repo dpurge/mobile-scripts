@@ -14,7 +14,12 @@ import android.webkit.WebViewClient
  */
 class MainFrameErrorClient(
     private val onMainFrameError: (url: String, error: String) -> Unit,
+    private val onPageLoaded: (url: String) -> Unit = {},
 ) : WebViewClient() {
+
+    override fun onPageFinished(view: WebView, url: String) {
+        onPageLoaded(url)
+    }
 
     override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
         if (request.isForMainFrame) {

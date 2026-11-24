@@ -1,7 +1,8 @@
 # Android client
 
-NOT RUN ON A DEVICE YET. Slice 8 is the full client (native status screen, Termux backend start, health
-poll, WebView, heartbeat, shutdown); it was only built. Everything that needs a phone is marked UNVERIFIED.
+Slice 8 is the full client (native status screen, Termux backend start, health poll, WebView, heartbeat,
+shutdown). Run once by the user on an Android 7 phone (WebView Chrome 52): backend start worked, the list
+was blank; the fixes since then are only built. Everything that needs a phone is marked UNVERIFIED.
 
 ## How the app works
 
@@ -16,18 +17,32 @@ Code in `app/src/main/java/local/mobilescripts/`:
 | `ConsecutiveFailures.kt` | Pure counter behind that rule (success resets it) |
 | `MainFrameErrorClient.kt` | `WebViewClient` that keeps links in the WebView and reports main-frame load errors and main-frame HTTP status 400 or more (sub-resources ignored) |
 | `NextUrl.kt` | Pure function: back to the list when no script runs and the WebView is elsewhere (mirrors the desktop client's `next_url`) |
-| `StatusScreen.kt` | Native full-screen status and diagnostic views (text 18sp, secondary 15sp, Retry button 48dp, selectable text) |
+| `StatusScreen.kt` | Native full-screen status, diagnostic (with the editable workspace path) and browser-handoff views (text 18sp, secondary 15sp, buttons 48dp, selectable text) |
+| `WebViewVersion.kt` | Pure: Chrome major version from the WebView user agent; below 80 (`MIN_CHROME_MAJOR`) the WebView is too old |
+| `WorkspaceSetting.kt` | The workspace path in Termux: saved in SharedPreferences, default `BuildConfig.WORKSPACE_DIR`; pure `validate` (absolute path) and `normalize` |
 
 - No automated tests cover the Kotlin logic (no JVM test setup here); `NextUrl.kt` and `ConsecutiveFailures.kt`
   are pure so they can be unit tested later. Their behaviour is UNVERIFIED.
+- WebView too old (Chrome below 80, e.g. Android 7 with Chrome 52, which showed a blank page): the
+  WebView is not created. `MainActivity.showBrowserHandoff` opens the list with `ACTION_VIEW` in the
+  default browser and keeps the heartbeat running; the native screen explains why and has an
+  "Open in browser" button. A script that stops itself cannot navigate the browser back to the list.
+  No foreground service, so Android may kill the backgrounded app (the watchdog then stops the backend
+  after 15 s). UNVERIFIED on a device. Why 80: the sources and `vendor/lit.js` use `?.` and `??`.
+- A page that loads but whose scripts do not run on a WebView that passed that check is detected 2 s after
+  the load: the diagnostic shows the WebView user agent and the last JavaScript error. UNVERIFIED.
+- A newer system WebView from F-Droid is not an option on a stock phone: only allow-listed, correctly
+  signed packages can be the WebView provider (https://chromium.googlesource.com/chromium/src/+/refs/tags/111.0.5545.3/android_webview/docs/webview-providers.md).
 - A backend that stops answering, or a page that fails to load, replaces the WebView with the diagnostic
   screen (Retry first sends a best-effort `POST /api/shutdown` to the previous port).
 - The WebView is created only after `GET /api/health` answered, so it is never empty. The health poll
   gives up after 30 seconds (`HEALTH_TIMEOUT_MILLIS` in `MainActivity.kt`) and shows the diagnostic.
-- The workspace path (where the repo is cloned in Termux) is the build-time constant
-  `BuildConfig.WORKSPACE_DIR`, default `/data/data/com.termux/files/home/mobile-scripts`. Override it with
-  `uv run python android/build_apk.py --workspace-dir PATH`, which passes the Gradle property
-  `-PworkspaceDir=PATH` (read in `app/build.gradle.kts`).
+- The workspace path (where the repo is cloned in Termux) is a setting: the diagnostic screen has a
+  text field for it and Retry saves it (`WorkspaceSetting`), so moving the clone needs no new APK.
+  Until it is set, the build-time default `BuildConfig.WORKSPACE_DIR` applies,
+  `/data/data/com.termux/files/home/mobile-scripts`; change that default with
+  `task apk:build -- --workspace-dir PATH`, which passes the Gradle property `-PworkspaceDir=PATH`
+  (read in `app/build.gradle.kts`).
 - The manifest's `configChanges` list keeps rotation from recreating the activity: `onDestroy` shuts the
   backend down, so a recreation would stop it.
 
@@ -63,8 +78,10 @@ IP counts as a localhost target; that a `<domain>` entry with an IP literal is h
 ## Build
 
 `task apk:build` (from the repo root) runs `uv run python android/build_apk.py [--context NAME]
-[--workspace-dir PATH]`. The docker context defaults to `rancher-desktop` and is always passed
-explicitly. The APK lands in `android/dist/app-debug.apk`.
+[--workspace-dir PATH] [--variant debug|release]`. The docker context defaults to `rancher-desktop` and is always passed
+explicitly. The APK lands in `android/dist/app-release.apk`
+(`--variant debug` gives `app-debug.apk`; both are signed with the debug keystore, see
+`buildTypes.release.signingConfig` in `app/build.gradle.kts`).
 
 `android/.cache/gradle` and `android/.cache/android` are mounted as the container's `~/.gradle` and
 `~/.android`: Gradle downloads are cached, and the generated debug keystore persists, so the signing
@@ -88,4 +105,4 @@ SHA-256 before the build.
 | Kotlin | built into AGP 9; AGP 9.5.2 depends on Kotlin Gradle plugin 2.2.10 | https://dl.google.com/android/maven2/com/android/tools/build/gradle/9.5.2/gradle-9.5.2.pom |
 | Command-line tools | 16111833 | highest `commandlinetools-linux-*_latest.zip` in https://dl.google.com/android/repository/repository2-3.xml |
 | Build tools | 36.0.0 (AGP 9.5 minimum and default) | same repository2-3.xml and the AGP page |
-| Platform | android-34 (compileSdk and targetSdk 34, minSdk 26) | project tech stack |
+| Platform | android-34 (compileSdk and targetSdk 34, minSdk 24, Android 7) | project tech stack |

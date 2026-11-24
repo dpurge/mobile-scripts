@@ -186,8 +186,10 @@ task app:window -- apps/hello_py/main.py    # one app in a window, without the l
 
 ## Android client
 
-**The Android client has not been run on a device yet.** It builds (`task apk:build`), but every step
-below that touches Termux or a phone is UNVERIFIED until you try it. Facts about the Termux
+**Only partly run on a device.** It builds (`task apk:build`). On an Android 7 phone (tested by the user,
+2026-11-23) the app installed, started the Termux backend and the backend log showed requests and
+heartbeats, but the list page was blank, because that phone's WebView is Chrome 52 (see "Old WebView
+(Android 7)" below). Every other step below that touches Termux or a phone is UNVERIFIED until you try it. Facts about the Termux
 `RUN_COMMAND` intent come from Termux's own documentation and sources (links and what stays unverified:
 `android/README.md`).
 
@@ -198,6 +200,40 @@ an empty WebView. The app sends a heartbeat every 3 seconds; closing the app cal
 and the backend's watchdog (15 seconds without a heartbeat) covers a killed app. If 3 heartbeats in a
 row fail (about 9 seconds), or the WebView cannot load a page (main frame only), the native diagnostic
 replaces the WebView; Retry first asks the previous backend to shut down, then starts a new attempt.
+
+### Old WebView (Android 7)
+
+The list page needs a WebView of Chrome 80 or newer: the frontend uses ES modules, custom elements,
+class fields and `?.`/`??` (Chrome 52 has none of the last three, and lacks modules and custom elements
+too). The WebView is a system component that the app cannot update; on Android 7 it can be Chrome 52
+even when the Chrome app is current.
+
+- The app reads the WebView version (the `Chrome/NN` part of its user agent) before creating the WebView.
+  Below 80 it opens the list in the phone's default browser instead and shows a native screen with the
+  reason and an "Open in browser" button. Keep the app open: its heartbeat keeps the backend alive and
+  closing it stops the backend. A script that stops itself cannot send the browser back to the list;
+  press Back or open the list again from the button.
+- Limits (UNVERIFIED on a device): Android may kill the backgrounded app, and the watchdog then stops
+  the backend after 15 seconds; there is no foreground service. This path was chosen over a legacy
+  bundle of the frontend, which would need polyfills for Chrome 52 that cannot be tested without
+  such a device.
+- A newer WebView cannot be installed from F-Droid on a stock phone: Android accepts only WebView
+  providers from a fixed list of package names, signed with the expected keys (Chromium's
+  "WebView Providers" document). It needs a custom ROM or root. Not verified for any specific device.
+- If the WebView is new enough but the page is still blank (scripts fail without a load error), the
+  app detects it 2 seconds after the load and shows "The page is blank" with the WebView user agent and
+  the last JavaScript error.
+
+### Where the workspace is (moving the clone)
+
+The app starts `<workspace>/launcher/termux/start.sh` in Termux. The default is
+`/data/data/com.termux/files/home/mobile-scripts`. To use another place, or after moving the clone:
+
+1. Open the app. If the backend does not start, the diagnostic screen shows a "Workspace" text field.
+   Type the new absolute path and press Retry. The path is kept in the app and used from then on, so no
+   new APK is needed. (The first screen also shows the path it is using.)
+2. Update `WORKSPACE_ROOT` in `config/.env` inside the clone if the scripts' root moved with it.
+3. Optional: a different built-in default for the APK: `task apk:build -- --workspace-dir PATH`.
 
 ### Termux setup
 
@@ -210,7 +246,7 @@ Do this once on the phone or tablet. Package names are to be checked on the devi
    Termux's core `termux-tools` package, so `termux-api` is not needed for them.
 3. Clone this repo to `~/mobile-scripts` (`git clone <your remote> ~/mobile-scripts`). The app expects it
    at `/data/data/com.termux/files/home/mobile-scripts`; for another path build the APK with
-   `uv run python android/build_apk.py --workspace-dir PATH`.
+   `task apk:build -- --workspace-dir PATH`.
 4. Create `config/.env`: `cp config/.env.example config/.env`, then edit `WORKSPACE_ROOT` if the scripts
    are not at the default path. Termux has no `uv` or `task` unless you install them, so `task setup`
    is not used here.
@@ -227,10 +263,13 @@ Do this once on the phone or tablet. Package names are to be checked on the devi
 
 ### Install on a phone or tablet
 
-1. On the computer: `task apk:build` (see "Android build" below). The APK is `android/dist/app-debug.apk`.
+1. On the computer: `task apk:build` (see "Android build" below). The APK is `android/dist/app-release.apk`
+   (signed with the debug key; `-- --variant debug` gives `app-debug.apk`). The minimum is Android 7 (API 24).
+   If Android refuses to install it over an earlier build ("App not installed"), the earlier build was
+   signed with another key: uninstall the old app first (Termux files and `config/` are not affected).
 2. Copy it to the device (USB, cloud drive, any file transfer) and open it in the file manager. Android
    asks you to allow installs from that app (the file manager); allow it once. Optional alternative:
-   `adb install -r android/dist/app-debug.apk`. Later builds use the same signing key (the keystore in
+   `adb install -r android/dist/app-release.apk`. Later builds use the same signing key (the keystore in
    `android/.cache/`), so they install over the previous one.
 3. First launch: the app asks for the Termux `com.termux.permission.RUN_COMMAND` permission; grant it. If the
    dialog does not appear, grant it in Android Settings, Apps, Mobile Scripts, Permissions (the Termux
@@ -273,9 +312,14 @@ task apk:build
 
 - Needs Docker through the Rancher Desktop context `rancher-desktop` (passed explicitly; override with
   `uv run python android/build_apk.py --context NAME`).
+- Options go after `--`: `task apk:build -- --variant debug --workspace-dir PATH`.
 - `--workspace-dir PATH` sets the repo path inside Termux that the APK uses (default
   `/data/data/com.termux/files/home/mobile-scripts`).
-- The APK lands in `android/dist/app-debug.apk`.
+- `--variant release|debug` (default `release`) picks the build type. Both are signed with the debug
+  keystore, so both install; the APK lands in `android/dist/app-<variant>.apk`. The script then checks
+  the signature and prints the package and SDK levels.
+- The Gradle zip is downloaded with `curl` (needed on networks whose certificate Python rejects) and
+  cached with its checksum, so a repeat build needs no network for it.
 - The image runs as `linux/amd64` because the Android build tools only ship x86_64 binaries. On an
   arm64 host (Apple silicon) that means emulation: measured here, the first build took about 9 minutes
   (image about 2.6 GB on disk, SDK and Gradle downloads) and a repeat run about 1 to 3 minutes.

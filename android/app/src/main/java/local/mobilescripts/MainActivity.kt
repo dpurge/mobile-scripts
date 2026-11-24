@@ -2,10 +2,16 @@ package local.mobilescripts
 
 import android.app.Activity
 import android.content.pm.PackageManager
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.os.SystemClock
 import android.view.View
 import android.view.ViewGroup
+import android.webkit.ConsoleMessage
+import android.webkit.WebChromeClient
+import android.webkit.WebSettings
 import android.webkit.WebView
 import java.io.IOException
 
@@ -25,6 +31,7 @@ import java.io.IOException
 class MainActivity : Activity() {
     private lateinit var termux: TermuxLauncher
     private lateinit var screens: StatusScreen
+    private lateinit var workspace: WorkspaceSetting
 
     // Bumped by every (re)start, so answers from an abandoned attempt are ignored.
     @Volatile private var attempt = 0
@@ -34,9 +41,16 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        termux = TermuxLauncher(this)
-        screens = StatusScreen(this, onRetry = ::begin)
+        workspace = WorkspaceSetting(this)
+        termux = TermuxLauncher(this, workspace::get)
+        screens = StatusScreen(this, currentWorkspace = workspace::get, onRetry = ::retryWith)
         begin()
+    }
+
+    /** Retry with the workspace path typed on the diagnostic screen. */
+    private fun retryWith(workspacePath: String) {
+        val error = workspace.save(workspacePath)
+        if (error == null) begin() else showDiagnostic(START_FAILED, error)
     }
 
     private fun begin() {
@@ -45,7 +59,7 @@ class MainActivity : Activity() {
         // Retry: do not leave the previous attempt's backend lingering (it may be half started).
         backend?.let(::shutdownInBackground)
         backend = null
-        showScreen(screens.status("Starting Termux backend..."))
+        showScreen(screens.status("Starting Termux backend...\n${workspace.get()}"))
         if (!termux.isInstalled()) {
             showDiagnostic(START_FAILED, "Termux (package com.termux) is not installed or not visible to this app.")
         } else if (!termux.hasRunCommandPermission()) {
@@ -117,15 +131,34 @@ class MainActivity : Activity() {
     }
 
     private fun showWebView(client: BackendClient, id: Int) {
+        val userAgent = WebSettings.getDefaultUserAgent(this)
+        if (WebViewVersion.isTooOld(userAgent)) {
+            showBrowserHandoff(client, id, userAgent)
+            return
+        }
+        // The last JavaScript error of the page, for the diagnostic when the list does not appear.
+        var lastConsoleError = "none reported"
         val view = WebView(this).apply {
             layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT,
             )
             // Without a WebViewClient, link navigation is handed to the browser app.
-            webViewClient = MainFrameErrorClient { url, error ->
+            webViewClient = MainFrameErrorClient(onMainFrameError = { url, error ->
                 // Posted: the WebView is destroyed by showDiagnostic, not inside its own callback.
                 post { if (id == attempt) showDiagnostic(PAGE_FAILED, "Loading $url failed: $error") }
+            }, onPageLoaded = { url ->
+                // A page that loads but whose scripts fail (an old WebView that cannot parse the
+                // modules) stays blank and raises no load error, so ask the page itself.
+                if (url == client.listUrl) postDelayed({ checkListRendered(client, id, lastConsoleError) }, LIST_CHECK_DELAY_MILLIS)
+            })
+            webChromeClient = object : WebChromeClient() {
+                override fun onConsoleMessage(message: ConsoleMessage): Boolean {
+                    if (message.messageLevel() == ConsoleMessage.MessageLevel.ERROR) {
+                        lastConsoleError = "${message.message()} (${message.sourceId()}:${message.lineNumber()})"
+                    }
+                    return true
+                }
             }
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
@@ -135,6 +168,10 @@ class MainActivity : Activity() {
         webView = view
         showScreen(view)
         view.loadUrl(client.listUrl)
+        startHeartbeat(client, id)
+    }
+
+    private fun startHeartbeat(client: BackendClient, id: Int) {
         heartbeat = HeartbeatLoop(
             client,
             onResult = { isScriptRunning ->
@@ -146,6 +183,47 @@ class MainActivity : Activity() {
                 }
             },
         ).also { it.start() }
+    }
+
+    /**
+     * The device's WebView is too old for the frontend (Android 7 ships Chrome 52), so the list opens
+     * in the browser instead. This activity stays as the owner of the backend: the heartbeat keeps it
+     * alive and closing this app stops it. There is no WebView, so a script that stops itself cannot
+     * send the browser back to the list; the user reopens it with the button.
+     */
+    private fun showBrowserHandoff(client: BackendClient, id: Int, userAgent: String) {
+        showScreen(screens.browserHandoff(
+            "The WebView of this device is too old (Chrome ${WebViewVersion.chromeMajor(userAgent)}, " +
+                "needs ${WebViewVersion.MIN_CHROME_MAJOR} or newer), so the app opens in your browser at " +
+                "${client.listUrl}\n\nKeep this app open: closing it stops the backend.",
+            onOpen = { openInBrowser(client.listUrl) },
+        ))
+        startHeartbeat(client, id)
+        openInBrowser(client.listUrl)
+    }
+
+    private fun openInBrowser(url: String) {
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        } catch (error: ActivityNotFoundException) {
+            showDiagnostic(PAGE_FAILED, "No browser app can open $url: $error")
+        }
+    }
+
+    /** The list page defines <app-list> when its scripts ran; if it is missing the page is blank. */
+    private fun checkListRendered(client: BackendClient, id: Int, lastConsoleError: String) {
+        val view = webView ?: return
+        if (id != attempt || view.url != client.listUrl) return
+        view.evaluateJavascript("!!(window.customElements && customElements.get('app-list'))") { answer ->
+            if (id == attempt && answer != "true") {
+                showDiagnostic(
+                    PAGE_BLANK,
+                    "The page loaded but its scripts did not run, so nothing is shown. " +
+                        "WebView: ${view.settings.userAgentString}. Last JavaScript error: $lastConsoleError. " +
+                        "Update Android System WebView (or Chrome) in the app store, then Retry.",
+                )
+            }
+        }
     }
 
     /** The script stopped itself (or crashed): show the list again. */
@@ -196,6 +274,8 @@ class MainActivity : Activity() {
         const val START_FAILED = "Could not start the Termux backend"
         const val BACKEND_STOPPED = "The backend stopped answering"
         const val PAGE_FAILED = "The page could not be loaded"
+        const val PAGE_BLANK = "The page is blank"
+        const val LIST_CHECK_DELAY_MILLIS = 2_000L
         const val HEALTH_TIMEOUT_MILLIS = 30_000L
         const val HEALTH_POLL_MILLIS = 500L
     }

@@ -17,3 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Android client APK built in Docker with `task apk:build`; native-first, with a status screen, diagnostics and Retry. NOT yet run on a device: all Android behaviour is unverified.
 - Taskfile as the project front door (`task setup`, `backend`, `test`, `refresh`, `app:run`, `desktop`, `app:window`, `apk:build`).
 - No-build Lit frontend with a vendored Lit (`launcher/frontend/vendor/lit.js`).
+- `task apk:build -- --variant debug|release` (default `release`): the release APK comes out signed and installable; the script verifies the signature.
+- Android diagnostic "The page is blank" when the list page loads but its scripts do not run.
+- Android: on a WebView older than Chrome 80 (Android 7 ships Chrome 52, which showed a blank page) the list opens in the default browser, with an explanatory screen and an "Open in browser" button.
+- Android: the workspace path in Termux can be changed on the diagnostic screen and is kept in the app, so moving the clone needs no new APK.
